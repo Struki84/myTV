@@ -217,8 +217,3 @@ To find your token, see Plex's guide [Finding an authentication token](https://s
 ```
 sudo grep -o 'PlexOnlineToken="[^"]*"' "/var/lib/plexmediaserver/Library/Application Support/Plex Media Server/Preferences.xml"
 ```
-
-## Notes
-
-- If you move or rename the script, run `init` again so the cron job points to the new path.
-- Plex can't tell "removed" apart from "watched" for movies, so a movie you watch leaves the pool the same way `remove-movie` does.
