@@ -33,6 +33,21 @@ UPDATE_TIME = "05:00"
   - A watched movie is out of the roster. An unwatched movie is in.
   - Watching a movie removes it from the roster, the same as `remove-movie`.
 
+### Show file
+
+Shows can be loaded from a plain text file with one show title per line. CSV isn't used because titles can contain commas.
+
+```
+# shows.txt
+The Office (US)
+Seinfeld
+Futurama
+```
+
+- Shows are taken in file order.
+- Blank lines and lines starting with `#` are skipped.
+- Titles must match Plex exactly as shown in the library.
+
 ### Plex token
 
 - The token is never part of the script's defaults.
@@ -45,11 +60,11 @@ UPDATE_TIME = "05:00"
 
 ## Commands
 
-### `init`
+### `init [--file shows.txt]`
 
 1. Gets the token from `PLEX_API_TOKEN`, or asks for it.
 2. Asks for each config value, showing the default. Pressing Enter keeps the default.
-3. Asks for the TV roster (show titles, in order).
+3. Sets the TV roster: from `--file` if given, otherwise by asking for show titles in order.
 4. Marks all episodes of the roster shows as unwatched. Shows that aren't on the roster are not touched.
 5. Marks all movies in `MOVIE_SECTION` as unwatched, so the movie roster starts as the full library.
 6. Installs the daily cron job at `UPDATE_TIME`, using the full path to `uv`. Any earlier cron entry from this script is replaced, never duplicated.
@@ -66,17 +81,36 @@ This is what cron runs. It rebuilds the playlist from the config:
    - If no unwatched movies remain, the playlist is built without a movie and the script reports it.
 4. Creates the playlist and prints its contents.
 
-### `add-show <title>`
+The show commands below take one or more titles, a `--file`, or both. For example:
 
-1. Checks that the show exists in `TV_SECTION`.
-2. Adds it to the end of `SHOWS`.
-3. Marks all its episodes as unwatched, so it starts from S01E01.
+```
+add-show "Seinfeld"
+add-show "Seinfeld" "Futurama"
+add-show --file shows.txt
+```
+
+Each command reports and skips titles it can't use, applies the rest, and rebuilds the playlist once at the end.
+
+### `add-show <title>... [--file shows.txt]`
+
+1. Checks that each show exists in `TV_SECTION`.
+2. Adds each one to the end of `SHOWS`, in the order given. Shows already on the roster are skipped.
+3. Marks all episodes of each added show as unwatched, so it starts from S01E01.
 4. Runs `update`.
 
-### `remove-show <title>`
+### `remove-show <title>... [--file shows.txt]`
 
-1. Removes the show from `SHOWS`. Its watched status is not changed.
+1. Removes each show from `SHOWS`. Watched status is not changed.
 2. Runs `update`.
+
+### `set-shows <title>... [--file shows.txt]`
+
+1. Replaces `SHOWS` with the given shows, in the order given.
+2. Shows that were already on the roster keep their progress.
+3. Shows new to the roster are marked unwatched, so they start from S01E01.
+4. Shows left out are removed. Their watched status is not changed.
+5. If none of the given shows are found, the roster is not changed.
+6. Runs `update`.
 
 ### `add-movie <title>`
 
@@ -107,10 +141,12 @@ The config file is kept. Run `init` to start again.
 
 ## Errors
 
-- A show or movie title that isn't found in its section is reported, and nothing is changed.
+- A movie title that isn't found in `MOVIE_SECTION` is reported, and nothing is changed.
+- A show title that isn't found in `TV_SECTION`, or isn't on the roster for `remove-show`, is reported and skipped. The other shows are still applied.
+- A missing show file stops the script with a clear message.
 - A missing token stops the script with a clear message.
 
 ## Known limitations
 
 - Plex can't tell "removed" apart from "watched" for movies. Re-running `init` resets all movies, which brings back the ones you removed.
-- Re-running `init` also resets the watched status of every roster show to the beginning. 
+- Re-running `init` also resets the watched status of every roster show to the beginning.

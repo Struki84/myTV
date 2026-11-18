@@ -111,6 +111,38 @@ def ask_token(saved_token):
         print("  A Plex token is required.")
 
 
+def read_show_file(file_path):
+    if not os.path.exists(file_path):
+        sys.exit(f"File not found: {file_path}")
+    show_titles = []
+    with open(file_path) as show_file:
+        for line in show_file:
+            show_title = line.strip()
+            if show_title and not show_title.startswith("#"):
+                show_titles.append(show_title)
+    return show_titles
+
+
+def collect_titles(args):
+    show_titles = list(args.titles)
+    if args.file:
+        show_titles.extend(read_show_file(args.file))
+    if not show_titles:
+        sys.exit("Give at least one show title or --file.")
+    return show_titles
+
+
+def resolve_shows(tv_section, show_titles):
+    shows = []
+    for show_title in show_titles:
+        try:
+            shows.append(tv_section.get(show_title))
+        except NotFound:
+            print(
+                f"Skipping (not found in '{tv_section.title}'): {show_title}")
+    return shows
+
+
 def ask_shows(tv_section, current_shows):
     if current_shows:
         print("Current TV roster: " + ", ".join(current_shows))
@@ -133,13 +165,6 @@ def ask_shows(tv_section, current_shows):
 
 
 # ---------- plex helpers ----------
-
-def find_show(plex, config, show_title):
-    try:
-        return plex.library.section(config["TV_SECTION"]).get(show_title)
-    except NotFound:
-        sys.exit(f"Show not found in '{config['TV_SECTION']}': {show_title}")
-
 
 def find_movie(plex, config, movie_title):
     try:
@@ -232,7 +257,11 @@ def cmd_init(args):
     tv_section = plex.library.section(config["TV_SECTION"])
     movie_section = plex.library.section(config["MOVIE_SECTION"])
 
-    config["SHOWS"] = ask_shows(tv_section, config.get("SHOWS", []))
+    if args.file:
+        config["SHOWS"] = [show.title for show in resolve_shows(
+            tv_section, read_show_file(args.file))]
+    else:
+        config["SHOWS"] = ask_shows(tv_section, config.get("SHOWS", []))
     config["PLEX_TOKEN"] = token
     save_config(config)
     print(f"Config saved to {CONFIG_PATH}.")
@@ -296,25 +325,72 @@ def cmd_update(args):
 def cmd_add_show(args):
     config = require_config()
     plex = connect(config)
-    show = find_show(plex, config, args.title)
-    if show.title in config["SHOWS"]:
-        sys.exit(f"Already on the roster: {show.title}")
-    config["SHOWS"].append(show.title)
+    tv_section = plex.library.section(config["TV_SECTION"])
+
+    added_count = 0
+    for show in resolve_shows(tv_section, collect_titles(args)):
+        if show.title in config["SHOWS"]:
+            print(f"Skipping (already on the roster): {show.title}")
+            continue
+        config["SHOWS"].append(show.title)
+        show.markUnwatched()
+        added_count += 1
+        print(f"Added: {show.title} (starts from S01E01)")
+
+    if not added_count:
+        print("Nothing added.")
+        return
     save_config(config)
-    show.markUnwatched()
-    print(f"Added: {show.title} (starts from S01E01)")
     cmd_update(args)
 
 
 def cmd_remove_show(args):
     config = require_config()
-    matching_titles = [show_title for show_title in config["SHOWS"]
-                       if show_title.lower() == args.title.lower()]
-    if not matching_titles:
-        sys.exit(f"Not on the roster: {args.title}")
-    config["SHOWS"].remove(matching_titles[0])
+
+    removed_count = 0
+    for show_title in collect_titles(args):
+        matching_titles = [roster_title for roster_title in config["SHOWS"]
+                           if roster_title.lower() == show_title.lower()]
+        if not matching_titles:
+            print(f"Skipping (not on the roster): {show_title}")
+            continue
+        config["SHOWS"].remove(matching_titles[0])
+        removed_count += 1
+        print(f"Removed: {matching_titles[0]}")
+
+    if not removed_count:
+        print("Nothing removed.")
+        return
     save_config(config)
-    print(f"Removed: {matching_titles[0]}")
+    cmd_update(args)
+
+
+def cmd_set_shows(args):
+    config = require_config()
+    plex = connect(config)
+    tv_section = plex.library.section(config["TV_SECTION"])
+
+    shows = resolve_shows(tv_section, collect_titles(args))
+    if not shows:
+        sys.exit("No valid shows given: roster not changed.")
+
+    previous_shows = set(config["SHOWS"])
+    new_roster = []
+    for show in shows:
+        if show.title in new_roster:
+            continue
+        new_roster.append(show.title)
+        if show.title not in previous_shows:
+            show.markUnwatched()
+            print(f"New: {show.title} (starts from S01E01)")
+        else:
+            print(f"Kept: {show.title}")
+
+    for show_title in previous_shows - set(new_roster):
+        print(f"Removed: {show_title}")
+
+    config["SHOWS"] = new_roster
+    save_config(config)
     cmd_update(args)
 
 
@@ -381,16 +457,26 @@ def main():
     parser = argparse.ArgumentParser(description="Daily Plex TV playlist")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser(
+    init_parser = subparsers.add_parser(
         "init", help="configure, reset watched status, install cron, build playlist")
+    init_parser.add_argument(
+        "--file", help="text file with one show title per line, used as the TV roster")
     subparsers.add_parser("update", help="rebuild the playlist (run by cron)")
     subparsers.add_parser(
         "list", help="show config, roster and today's playlist")
     subparsers.add_parser("stop", help="remove cron job and delete playlist")
 
     for command_name, help_text in (
-        ("add-show", "add a show to the roster, starting from S01E01"),
-        ("remove-show", "remove a show from the roster"),
+        ("add-show", "add shows to the end of the roster, new shows start from S01E01"),
+        ("remove-show", "remove shows from the roster"),
+        ("set-shows", "replace the roster, new shows start from S01E01"),
+    ):
+        command_parser = subparsers.add_parser(command_name, help=help_text)
+        command_parser.add_argument("titles", nargs="*")
+        command_parser.add_argument(
+            "--file", help="text file with one show title per line")
+
+    for command_name, help_text in (
         ("add-movie", "mark a movie unwatched (into the roster)"),
         ("remove-movie", "mark a movie watched (out of the roster)"),
     ):
@@ -402,6 +488,7 @@ def main():
         "update": cmd_update,
         "add-show": cmd_add_show,
         "remove-show": cmd_remove_show,
+        "set-shows": cmd_set_shows,
         "add-movie": cmd_add_movie,
         "remove-movie": cmd_remove_movie,
         "list": cmd_list,
